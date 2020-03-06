@@ -1,66 +1,81 @@
-from typing import List, Set, Dict
+from typing import List, Dict, Tuple
 from collections import defaultdict, Counter, OrderedDict
-import string
 from nltk.corpus import wordnet as wn
+import nltk
 from lxml import etree
-import tensorflow as tf
 import os
-import re
-from nltk.corpus import stopwords
 
-
-def load_dataset(filepath_train: str, filepath_label_train: str,dev_parsing: bool = False) -> List[str]:
+def __check_if_file_exists(filename: str) -> bool:
     """
-    Reads the specified data from input and returns a list that will represent the dataset of the given language
-    :param filepath_train: the path of the file that holds the training sentences
-    :param filepath_label_train: the path of the file that holds the labels
-    :param dev_parsing: whether the data that the function parses is for dev purposes
-    :return the loaded dataset
+    Check if the file already exists parsed
+    :param filename: the name of the file to look for
+    :return: True if the file is already in the resources directory, parsed. False otherwhise.
     """
-    is_it_multilingual = any(lang in os.path.basename(filepath_label_train) for lang in ["it","es","de","fr"])
-    path_for_eventual_existing_label_data = None
-    path_for_eventual_existing_train_data = None
+    return any(files for root, dirs, files in os.walk("../") if filename in files)
 
-    if is_it_multilingual:
-        path_for_eventual_existing_label_data = '../dataset/parsed/eval_dataset/parsed/' +os.path.basename(filepath_label_train[0:-3]+'casted.txt')
-        path_for_eventual_existing_train_data = '../dataset/parsed/eval_dataset/parsed/' +os.path.basename(filepath_train[0:-3]+'casted.txt')
-    elif dev_parsing:
-        path_for_eventual_existing_label_data = '../dataset/parsed/dev/'+os.path.basename(filepath_label_train[0:-3]+'casted.txt')
-        path_for_eventual_existing_train_data = '../dataset/parsed/dev/'+ os.path.basename(filepath_train[0:-3] + 'casted.txt')
-    else:
-        path_for_eventual_existing_label_data = '../dataset/parsed/'+os.path.basename(filepath_label_train[0:-3]+'casted.txt')
-        path_for_eventual_existing_train_data = '../dataset/parsed/'+ os.path.basename(filepath_train[0:-3] + 'casted.txt')
 
-    train_data = None
-    train_labels = None
-    if os.path.exists(path_for_eventual_existing_train_data):
-        train_data = __reload_data_from_disk(path_for_eventual_existing_train_data)
-    if os.path.exists(path_for_eventual_existing_label_data):
-        train_labels = __reload_data_from_disk(path_for_eventual_existing_label_data, data='label')
-        return train_data, train_labels
-    print("Parse train starting...")
-    with open(filepath_train, "rb") as infile:
-        tree_train = etree.fromstring(infile.read())
+def __start_dataset_parsing(filepath: str):
+  """
+  Parse the given filepath and returns an lxml etree object.
+  :param filepath: the path of the file to parse
+  :return its representation as an lxml etree object
+  """
+  with open(filepath, "rb") as infile:
+    tree_train = etree.fromstring(infile.read())
+  return tree_train
 
+
+def load_dataset(filepath: str) -> Tuple:
+    """
+    Loads a given file from input and returns it as a List of List. This function supposes that the incoming input is a .xml file and that the path
+    actually brings to the file
+    :param filepath_train: the either relative or absolute path
+    :return: a List of List that contains the parsed data and the etree object that will have to be passed to the load_gold_key_file, if a label file will be supplied
+    """
+    filename = filepath[filepath.rfind('/') + 1:-3] + "casted.txt"
+    already_parsed = __check_if_file_exists(filename)
+    tree_train = __start_dataset_parsing(filepath)
+    if already_parsed:
+        print("File was already parsed. Reloading it...")
+        filepath = "../resources/parsed/"+filename if 'dev' not in filepath else "../resources/parsed/dev/"+filename
+        data = __reload_data_from_disk(filepath, data='train')
+        return data, tree_train
+    print("Parse dataset starting...")
     sentences = __load_train_sentences(tree_train)
-    train_data = [sentence.strip() for sentence in sentences]
-    print("Done with train. Starting with labels...")
-    with open(path_for_eventual_existing_train_data, 'a') as train:
-        for frase in train_data:
-            train.write("#"+frase+"#"+"\n")
+    train= [sentence.strip() for sentence in sentences]
+    with open('../resources/parsed/'+filename, 'a') as to_save:
+        for frase in train:
+            to_save.write("#"+frase+"#"+"\n")
+    print("Done. Returning...")
+    return train, tree_train
 
-    with open(filepath_label_train, encoding="utf-8") as infilez:
+
+def load_gold_key_file(filepath: str, tree_train: etree._Element) -> List[List]:
+    """
+    Loads a given file from input and returns it as a List. This function supposes that the incoming input is a .txt file and that the path
+    actually brings to the file. The file is considered to be the gold.key of the previously loaded file
+    :param filepath_train: the either relative or absolute path
+    :return: a List of List that contains the parsed data
+    """
+    filename = filepath[filepath.rfind('/') + 1:-3] + "casted.txt"
+    print("Checking ", filename)
+    already_parsed = __check_if_file_exists(filename)
+    if already_parsed:
+        filepath = "../resources/parsed/"+filename if 'dev' not in filepath else "../resources/parsed/dev/"+filename
+        data = __reload_data_from_disk(filepath, data='test')
+        print("Done loading gold key")
+        return data
+    with open(filepath, encoding="utf-8") as infilez:
         contents_label = infilez.read().splitlines()
-
-    contents_label = [label for label in contents_label if label != "" or label is not None]
+    contents_label = [label for label in contents_label if label != "" and label != "\n" or label is not None]
     pool_of_labels = {frase.split(" ")[0] : frase.split(" ")[1] for frase in contents_label}
-    train_labels = __create_labeled_sentences(pool_of_labels,tree_train, path_for_eventual_existing_label_data)
+    labels = __create_labeled_sentences(pool_of_labels,tree_train, '../resources/parsed/'+filename)
     print("Done with labels...")
-    return train_data, train_labels
+    return labels
 
 def __reload_data_from_disk(filepath: str, data: str ='train'):
     """
-    Reload the previously parsed_yeah files from disk
+    Reload the previously parsed files from disk
     :param filepath: the path of the file to be loaded
     :param data: whether the file is for train or other purposes
     :return: a List (if data == 'train') or a List of List (if data != 'train') containing the data of the loaded file
@@ -104,6 +119,7 @@ def __create_labeled_sentences(pool_of_labels: dict, tree : etree._Element, file
     """
     print("Saving labeled stuff")
     toReturn = []
+    mapping_to_persist = defaultdict(list)
     sentences_xml_elements = tree.xpath("/*/*/*")
     for sentence in sentences_xml_elements:
         wn_domains_sentence = ""
@@ -126,6 +142,7 @@ def __create_labeled_sentences(pool_of_labels: dict, tree : etree._Element, file
                     wn_domains_sentence += ' ' + put_correct_id(word.text,synset_id,mode='wn_dom')
                     bn_domains_sentence += ' ' + word.text + '_' + put_correct_id(word.text,synset_id)
                     lex_domains_sentence += ' ' + put_correct_id(word.text,synset_id,mode='lex')
+                    mapping_to_persist[word.text].extend([synset_id])
                     print("Found ID. done. continuing")
                     continue
             else:
@@ -136,6 +153,10 @@ def __create_labeled_sentences(pool_of_labels: dict, tree : etree._Element, file
     with open(filepath, 'a') as writer:
         for matrix in toReturn:
             writer.write('#' + matrix[0].strip() + '~' + matrix[1].strip() + '~' + matrix[2].strip() + '#' +"\n")
+    with open('../resources/mapping/lemma2wn.txt','a') as mapping_lemma:
+        for chiave, valore in mapping_to_persist.items():
+            stringa = ' '.join(wn_id for wn_id in valore)
+            mapping_lemma.write(chiave + "~" + stringa+"#\n")
     print("end")
     return toReturn
 
@@ -149,7 +170,6 @@ def put_correct_id(word:str, synset_id: str, mode: str='bn') -> str:
     :return: the found id if exists, else the word that the system is looking in this exact moment
     """
     # next() seems to be way faster than a classic list comprehension
-    #ref -> next(key for key, value in bn2wn.items() if synset_id in value)
     if mode == 'wn_dom':
         try:
             synset_bn = next(key for key, value in bn2wn.items() if synset_id in value)
@@ -171,37 +191,40 @@ def put_correct_id(word:str, synset_id: str, mode: str='bn') -> str:
     return word
 
 
-def calculate_train_output_size(data, max_size_of_vocab: int = 30000, min_count: int = 3, mode: str="word") -> Dict:
+def create_mapping_dictionary(resources_path: str, data = None, max_size_of_vocab: int = 30000, min_count: int = 3, mode: str="word") -> Dict:
     """
-    Calculates the output size of the train data
-    :param data: the list that will represent the train data
+    Creates (or reload from disk) the mapping label dictionary of the given mode and file
+    :param resources_path: the path where the program should go to look for files
+    :param data: The collection that will represent the data from where create the dictionary. This can be None (so, default type) if I just want to "force" the load of something from disk
     :param max_size_of_vocab: max size of the vocab. Usually goes for 30k
     :param min_count: min count of the vocab. Usually is 3
     :param mode: whether I need to handle the #words, or #bn ids or #lex ids or #wndmn ids
-    :return: an integer with the size of the output_size unit
+    :return: a Dictionary that goes by word -> serial
 
     """
-    filename = None
+    print("Creating Mapping dictionary....")
+    filename = "/vocabularies/"
     if mode == "word":
-        filename = "vocab_train.txt"
+        filename += "vocab_train.txt"
     if mode == 'wndmn' or mode == 'lex':
-        filename = "vocab_wn_domains_labels.txt" if mode == 'wndmn' else "vocab_lex_labels.txt"
+        filename += "vocab_wn_domains_labels.txt" if mode == 'wndmn' else "vocab_lex_labels.txt"
     if mode == 'bn':
-        filename = "vocab_bn_labels.txt"
-    path = "../resources/vocabularies/"
-
-    if os.path.exists(path+filename):
-        toReturn = __load_synset_mapping(path+filename)
+        filename += "vocab_bn_labels.txt"
+    print(resources_path+filename)
+    if os.path.exists(resources_path+filename) and data is None:
+        toReturn = __load_vocab_mapping(resources_path+filename)
+        print("Done loading dictionary")
         return toReturn
 
     count_of_words = __count_words(data,mode=mode)
     count_of_words = OrderedDict(
-        sorted(count_of_words.items(), key=lambda k: int(k[1]), reverse=True)
+        sorted(count_of_words.items(), key=lambda dict_record: int(dict_record[1]), reverse=True)
     )
     i = 0
     tmp_container = dict()
     for key, value in count_of_words.items():
         if i > max_size_of_vocab:
+            #I've reached the max consented length of the dictionary. No need to continue
             break
         tmp_container[key] = value
         i += 1
@@ -216,14 +239,43 @@ def calculate_train_output_size(data, max_size_of_vocab: int = 30000, min_count:
             continue
 
 
-    if not os.path.exists(path):
-        os.mkdir(path)
-    with open(path+filename, "w+") as fileToWrite:
+    if not os.path.exists(resources_path):
+        os.mkdir(resources_path)
+    with open(resources_path+filename, "w+") as fileToWrite:
         for chiavi, valori in toReturn.items():
             fileToWrite.write(chiavi + " " + str(valori) + "\n")
     return toReturn
 
 
+def load_multilingual_mapping(filepath: str, lang: str='EN') -> Dict:
+    """
+    Given the base path, looks for the multilingual mapping provided, parse it, and return the 5 dictionaries of the languages (IT,FR,DE,ES)
+    :param filepath: the first part of the path that needs to be used to load the file
+    :param lang: The language to which pay special attention in the parsing process. Possible values:
+        EN --> English will be the only language considered
+        IT --> Italian will be the only language considered
+        DE --> Deutsch will be the only language considered
+        ES --> Spanish will be the only language considered
+        FR --> French will be the only language considered
+        N.B.: These are just an example basing on the slides given as a guideline. All languages are welcome thanks to the implementation.
+    :return: a dictionary that actually represent the mapping of the language
+    """
+    language_dict = defaultdict(list)
+    try:
+        nltk.data.find('corpora/omw.zip')
+        print("OMW already here")
+    except:
+        print("Installing OMW...")
+        nltk.download('omw')
+    with open(filepath) as fileToRead:
+        content = fileToRead.readlines()
+    for riga in content:
+        contenuto_interno = riga.split()
+        lemma = contenuto_interno[1]
+        lemma = lemma[:lemma.rfind('#')]
+        if contenuto_interno[0] == lang:
+            language_dict[lemma].extend(contenuto_interno[2:])
+    return language_dict
 
 def __count_words(data, mode: str = "word") -> Dict:
     """
@@ -241,30 +293,12 @@ def __count_words(data, mode: str = "word") -> Dict:
         indexToChoose = 1 if mode == 'wnmdn' else -1
         data = [[line for line in test] for test in data]
         data= [dato[indexToChoose] for dato in data if dato]
-        count_of_words = Counter(
-            word
-            for line in data
-            for word in line.split(" ")
-            if "UNK" not in word
-        )
+        count_of_words = Counter(word for line in data for word in line.split(" ") if "UNK" not in word)
     if mode == 'bn':
         data = [[line for line in test if line and  "bn:" in line] for test in data]
         data= [dato[0] for dato in data if dato]
         count_of_words = Counter(word for line in data for word in line.split(" "))
     return count_of_words
-
-
-
-
-def __clean_phrase(sentence: str, special: bool = False) -> str:
-    """
-    Given a sentence to clean, the function cleans the string
-    :param sentence: the string to clean
-    :param special: whether a different set of punctuation should be used or not
-    :return: the cleared string
-    """
-    tmp = [word for word in sentence.lower().split() if word not in stopwords.words('english')]
-    return tmp
 
 
 def __load_synset_mapping(filepath: str) -> Dict:
@@ -282,11 +316,58 @@ def __load_synset_mapping(filepath: str) -> Dict:
     return dizionario
 
 
+def __load_vocab_mapping(filepath: str) -> Dict:
+    """
+    Loads the vocab mapping from the system
+    :param filepath: the path of the file to load
+    :return: a dict representation of the loaded file
+    """
+    print("Reloading dict from disk")
+    dizionario = dict()
+    with open(filepath) as file:
+        content = file.readlines()
+    for arr in content:
+        k, *v = arr.split()
+        dizionario[k] = v[0]
+    return dizionario
+
+
+def reload_word_mapping(filepath:str) -> Dict:
+    """
+    Loads the lemma to wn id mapping from the FS
+    :param filepath: the path of the file to load
+    :return: a dict representation of the loaded file
+    """
+    dizionario = dict()
+    with open(filepath) as file:
+        content = file.read()
+    for arr in content.split('#'):
+        if arr == '\n':
+            continue
+        try:
+            k, *v = arr.split('~')
+            k = k[1:] if '\n' in k else k
+            v = v[0].split(' ')
+        except:
+            print("ciao")
+        dizionario[k] = v
+    return dizionario
+
+
 bn2wn = __load_synset_mapping('../resources/babelnet2wordnet.tsv')
 bn2wndomains = __load_synset_mapping('../resources/babelnet2wndomains.tsv')
 bn2lex = __load_synset_mapping('../resources/babelnet2lexnames.tsv')
 
 
+def get_bn2wn() -> Dict:
+    return bn2wn
+
+def get_bn2wndomains() -> Dict:
+    return bn2wndomains
+
+def get_bn2lex() -> Dict:
+    return bn2lex
+
 if __name__ == "__main__":
-    train,label = load_dataset("../dataset/SemCor/semcor.data.xml", "../dataset/SemCor/semcor.gold.key.txt")
-    print(train[17:100])
+    train,etree_file = load_dataset("../dataset/SemCor/semcor.data.xml")
+    label = load_gold_key_file("../dataset/SemCor/semcor.gold.key.txt", etree_file)
